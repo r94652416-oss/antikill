@@ -3,16 +3,17 @@ local Players            = game:GetService("Players")
 local ReplicatedStorage  = game:GetService("ReplicatedStorage")
 local VirtualInputManager= game:GetService("VirtualInputManager")
 local UserInputService   = game:GetService("UserInputService")
+local RunService         = game:GetService("RunService")
 
 --// Local Player
 local LP = Players.LocalPlayer
 local Character = LP.Character or LP.CharacterAdded:Wait()
 local Humanoid  = Character:WaitForChild("Humanoid")
+local Camera    = workspace.CurrentCamera
 
 --// Config
 local TOGGLE_KEY        = Enum.KeyCode.F6
-local SLOT1_CLICK_DELAY = 1.0
-local SLOT3_ATTACK_RATE = 0.05
+local ATTACK_RATE       = 0.05          -- spam rate (20 clicks/sec)
 local HP_STOP_PERCENT   = 0.05
 local BEHIND_DIST       = 3.5
 local FRONT_DIST        = 3.5
@@ -20,7 +21,8 @@ local TELEPORT_Y        = 0
 local TELEPORT_COOLDOWN = 0.5
 local MAX_ATTACK_TIME   = 8
 local ATTACKER_MEMORY   = 3.0
-local BULLET_WAIT       = 0.15   -- wait this long for a bullet event before falling back
+local BULLET_WAIT       = 0.15
+local CAMERA_HEIGHT     = 1.5
 
 local DEBUG = true
 local function log(...) if DEBUG then print("[Counter]", ...) end end
@@ -31,8 +33,10 @@ local isCountering = false
 local ENABLED = true
 local lastAttacker = nil
 local lastAttackerTime = 0
-local lastBulletSeq = 0        -- increments each time a bullet hits us
+local lastBulletSeq = 0
 local lastTeleportTime = 0
+local camLockTarget = nil
+local camLockConn = nil
 
 --// ---- MainGameEvent ----
 local GameRemotes = ReplicatedStorage:FindFirstChild("GameRemotes")
@@ -41,13 +45,11 @@ if not MainGameEvent then
 	MainGameEvent = ReplicatedStorage:FindFirstChild("MainGameEvent")
 end
 
---// ---- "Am I this instance?" check ----
+--// ---- "Am I this instance?" ----
 local function isMine(inst)
 	if typeof(inst) ~= "Instance" then return false end
-	-- Fast path: inside LP.Character
 	local c = LP.Character
 	if c and (inst == c or inst:IsDescendantOf(c)) then return true end
-	-- Alternate container: Workspace.Players.<name>
 	local wp = Workspace:FindFirstChild("Players")
 	if wp then
 		local alt = wp:FindFirstChild(LP.Name)
@@ -60,11 +62,9 @@ end
 local function handleBulletPayload(...)
 	local args = {...}
 	if args[1] ~= "ClientBullet" then return end
-
 	local shooter = args[2]
 	if typeof(shooter) ~= "Instance" then return end
 
-	-- Does any instance arg belong to me?
 	local hitMe = false
 	for i = 3, #args do
 		local a = args[i]
@@ -88,8 +88,52 @@ end
 if MainGameEvent then
 	MainGameEvent.OnClientEvent:Connect(handleBulletPayload)
 	log("Hooked MainGameEvent.OnClientEvent")
-else
-	log("WARNING: MainGameEvent not found")
+end
+
+--// ---- Target hitbox lookup ----
+local function getTargetHitbox(player)
+	local char = player and player.Character
+	if not char then return nil end
+	local root = char:FindFirstChild("HumanoidRootPart")
+	if not root then return nil end
+	local attach = root:FindFirstChild("RootAttachment")
+	if attach then
+		local hb = attach:FindFirstChild("Hitbox")
+		if hb then return hb end
+	end
+	return root
+end
+
+--// ---- Camera lock ----
+local function startCameraLock(player)
+	camLockTarget = player
+	if camLockConn then camLockConn:Disconnect() end
+
+	camLockConn = RunService.RenderStepped:Connect(function()
+		if not camLockTarget then return end
+		local hb = getTargetHitbox(camLockTarget)
+		local myRoot = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+		if not hb or not myRoot then return end
+		local eye = myRoot.Position + Vector3.new(0, CAMERA_HEIGHT, 0)
+		Camera.CFrame = CFrame.new(eye, hb.Position)
+	end)
+	log("Camera locked onto:", player.Name)
+end
+
+local function stopCameraLock()
+	camLockTarget = nil
+	if camLockConn then
+		camLockConn:Disconnect()
+		camLockConn = nil
+	end
+	if LP.Character then
+		local hum = LP.Character:FindFirstChildOfClass("Humanoid")
+		if hum then
+			Camera.CameraSubject = hum
+			Camera.CameraType = Enum.CameraType.Custom
+		end
+	end
+	log("Camera lock released")
 end
 
 --// ---- Number keys ----
@@ -138,9 +182,8 @@ local function getEquippedTool()
 	return char:FindFirstChildOfClass("Tool")
 end
 
---// ---- Attacker resolution (with bullet-event wait) ----
+--// ---- Attacker resolution ----
 local function resolveAttacker()
-	-- 1) Fresh bullet trace
 	if lastAttacker and (tick() - lastAttackerTime) <= ATTACKER_MEMORY then
 		local c = lastAttacker.Character
 		if lastAttacker.Parent and c and c:FindFirstChild("Humanoid")
@@ -149,7 +192,6 @@ local function resolveAttacker()
 		end
 	end
 
-	-- 2) Wait a short beat in case the bullet event is still in flight
 	local seqBefore = lastBulletSeq
 	local deadline = tick() + BULLET_WAIT
 	while tick() < deadline do
@@ -165,7 +207,6 @@ local function resolveAttacker()
 		task.wait(0.01)
 	end
 
-	-- 3) Humanoid attributes
 	local char = LP.Character
 	local hum = char and char:FindFirstChildOfClass("Humanoid")
 	if hum then
@@ -178,7 +219,6 @@ local function resolveAttacker()
 		end
 	end
 
-	-- 4) Nearest (last resort)
 	local myRoot = char and char:FindFirstChild("HumanoidRootPart")
 	if not myRoot then return nil end
 	local closest, best = nil, math.huge
@@ -195,7 +235,7 @@ local function resolveAttacker()
 	return closest
 end
 
---// ---- Counter attack ----
+--// ---- Counter attack (slot 1 spam) ----
 local function counterAttack(attacker)
 	if isCountering then return end
 	if not attacker or not attacker.Character then return end
@@ -208,58 +248,50 @@ local function counterAttack(attacker)
 		if not myHum then isCountering = false return end
 
 		setupNetwork()
+		startCameraLock(attacker)
 
 		local tChar = attacker.Character
 		local tHum = tChar and tChar:FindFirstChildOfClass("Humanoid")
 		local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
-		if not (tHum and tRoot) then isCountering = false return end
+		if not (tHum and tRoot) then
+			isCountering = false
+			stopCameraLock()
+			return
+		end
 
 		log("Attacking:", attacker.Name)
 
+		-- Equip slot 1
 		pressNumberKey(1)
 		task.wait(0.15)
 
-		for i = 1, 2 do
-			if not ENABLED then isCountering = false return end
-			tChar = attacker.Character
-			tHum = tChar and tChar:FindFirstChildOfClass("Humanoid")
-			tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
-			if not (tHum and tRoot) or tHum.Health <= 0 then
-				isCountering = false
-				return
-			end
-			teleportAround(tRoot, (i % 2 == 1) and 1 or -1)
-			task.wait(0.03)
-			local tool = getEquippedTool()
-			if tool then tool:Activate() end
-			log("Slot 1 click #" .. i)
-			if i < 2 then task.wait(SLOT1_CLICK_DELAY) end
-		end
-
-		pressNumberKey(3)
-		task.wait(0.15)
-		log("Switched to slot 3 — spamming")
-
+		-- Spam slot 1 until target <= 5% HP (or dead / timeout)
 		local side = 1
 		local start = tick()
 		while tick() - start < MAX_ATTACK_TIME do
 			if not ENABLED then break end
+
 			tChar = attacker.Character
 			tHum = tChar and tChar:FindFirstChildOfClass("Humanoid")
 			tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
 			if not (tHum and tRoot) then break end
 			if tHum.Health <= 0 then break end
+
 			local pct = tHum.Health / tHum.MaxHealth
 			if pct <= HP_STOP_PERCENT then break end
+
 			teleportAround(tRoot, side)
 			side = -side
+
 			local tool = getEquippedTool()
 			if tool then tool:Activate() end
-			task.wait(SLOT3_ATTACK_RATE)
+
+			task.wait(ATTACK_RATE)
 		end
 
 		log("Counter attack finished")
 		isCountering = false
+		stopCameraLock()
 	end)
 end
 
@@ -294,7 +326,8 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if input.KeyCode == TOGGLE_KEY then
 		ENABLED = not ENABLED
 		log(ENABLED and "✅ ENABLED" or "⛔ DISABLED")
+		if not ENABLED then stopCameraLock() end
 	end
 end)
 
-log("Loaded — bullet trace via Workspace.Players.<name>. F6 to toggle.")
+log("Loaded — slot 1 spam + camera lock. F6 to toggle.")
