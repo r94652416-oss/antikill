@@ -13,19 +13,22 @@ local Camera    = workspace.CurrentCamera
 
 --// Config
 local TOGGLE_KEY        = Enum.KeyCode.F6
-local ATTACK_RATE       = 0.05          -- spam rate (20 clicks/sec)
+local ATTACK_RATE       = 0
 local HP_STOP_PERCENT   = 0.05
-local BEHIND_DIST       = 3.5
-local FRONT_DIST        = 3.5
+local BEHIND_DIST       = 4.5
+local FRONT_DIST        = 4.5
 local TELEPORT_Y        = 0
 local TELEPORT_COOLDOWN = 0
 local MAX_ATTACK_TIME   = 8
 local ATTACKER_MEMORY   = 3.0
 local BULLET_WAIT       = 0.15
 local CAMERA_HEIGHT     = 1.5
+local TARGET_TOOL_NAME  = "[Double-Barrel SG]"
 
 local DEBUG = true
 local function log(...) if DEBUG then print("[Counter]", ...) end end
+
+log("Script starting...")
 
 --// State
 local lastHealth = Humanoid.Health
@@ -37,60 +40,39 @@ local lastBulletSeq = 0
 local lastTeleportTime = 0
 local camLockTarget = nil
 local camLockConn = nil
+local mouseLockConn = nil
 
---// ---- MainGameEvent ----
-local GameRemotes = ReplicatedStorage:FindFirstChild("GameRemotes")
-local MainGameEvent = GameRemotes and GameRemotes:FindFirstChild("MainGameEvent")
-if not MainGameEvent then
-	MainGameEvent = ReplicatedStorage:FindFirstChild("MainGameEvent")
+--// Forward declarations (so later functions can reference these safely)
+local startCameraLock
+local stopCameraLock
+local startMouseLock
+local stopMouseLock
+
+--// ---- Mouse lock ----
+function startMouseLock()
+	if mouseLockConn then return end
+	mouseLockConn = RunService.RenderStepped:Connect(function()
+		UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+		pcall(function()
+			local vp = Camera and Camera.ViewportSize
+			if vp then
+				UserInputService:SetMouseLocation(vp.X / 2, vp.Y / 2)
+			end
+		end)
+	end)
+	log("Mouse locked to center")
 end
 
---// ---- "Am I this instance?" ----
-local function isMine(inst)
-	if typeof(inst) ~= "Instance" then return false end
-	local c = LP.Character
-	if c and (inst == c or inst:IsDescendantOf(c)) then return true end
-	local wp = Workspace:FindFirstChild("Players")
-	if wp then
-		local alt = wp:FindFirstChild(LP.Name)
-		if alt and (inst == alt or inst:IsDescendantOf(alt)) then return true end
+function stopMouseLock()
+	if mouseLockConn then
+		mouseLockConn:Disconnect()
+		mouseLockConn = nil
 	end
-	return false
+	UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+	log("Mouse lock released")
 end
 
---// ---- Damage trace ----
-local function handleBulletPayload(...)
-	local args = {...}
-	if args[1] ~= "ClientBullet" then return end
-	local shooter = args[2]
-	if typeof(shooter) ~= "Instance" then return end
-
-	local hitMe = false
-	for i = 3, #args do
-		local a = args[i]
-		if typeof(a) == "Instance" and isMine(a) then
-			hitMe = true
-			break
-		end
-	end
-	if not hitMe then return end
-
-	local shooterPlayer = Players:GetPlayerFromCharacter(shooter)
-	if not shooterPlayer and shooter:IsA("Player") then shooterPlayer = shooter end
-	if not shooterPlayer or shooterPlayer == LP then return end
-
-	lastAttacker = shooterPlayer
-	lastAttackerTime = tick()
-	lastBulletSeq = lastBulletSeq + 1
-	log("Bullet hit me from:", shooterPlayer.Name, "(seq " .. lastBulletSeq .. ")")
-end
-
-if MainGameEvent then
-	MainGameEvent.OnClientEvent:Connect(handleBulletPayload)
-	log("Hooked MainGameEvent.OnClientEvent")
-end
-
---// ---- Target hitbox lookup ----
+--// ---- Target hitbox ----
 local function getTargetHitbox(player)
 	local char = player and player.Character
 	if not char then return nil end
@@ -105,10 +87,9 @@ local function getTargetHitbox(player)
 end
 
 --// ---- Camera lock ----
-local function startCameraLock(player)
+function startCameraLock(player)
 	camLockTarget = player
 	if camLockConn then camLockConn:Disconnect() end
-
 	camLockConn = RunService.RenderStepped:Connect(function()
 		if not camLockTarget then return end
 		local hb = getTargetHitbox(camLockTarget)
@@ -117,10 +98,11 @@ local function startCameraLock(player)
 		local eye = myRoot.Position + Vector3.new(0, CAMERA_HEIGHT, 0)
 		Camera.CFrame = CFrame.new(eye, hb.Position)
 	end)
+	startMouseLock()
 	log("Camera locked onto:", player.Name)
 end
 
-local function stopCameraLock()
+function stopCameraLock()
 	camLockTarget = nil
 	if camLockConn then
 		camLockConn:Disconnect()
@@ -133,21 +115,99 @@ local function stopCameraLock()
 			Camera.CameraType = Enum.CameraType.Custom
 		end
 	end
+	stopMouseLock()
 	log("Camera lock released")
 end
 
---// ---- Number keys ----
-local KEY_MAP = {
-	[1]=Enum.KeyCode.One,[2]=Enum.KeyCode.Two,[3]=Enum.KeyCode.Three,
-	[4]=Enum.KeyCode.Four,[5]=Enum.KeyCode.Five,[6]=Enum.KeyCode.Six,
-	[7]=Enum.KeyCode.Seven,[8]=Enum.KeyCode.Eight,[9]=Enum.KeyCode.Nine,
-}
-local function pressNumberKey(n)
-	local key = KEY_MAP[n] or Enum.KeyCode.One
-	VirtualInputManager:SendKeyEvent(true,  key, false, game)
-	task.wait(0.03)
-	VirtualInputManager:SendKeyEvent(false, key, false, game)
-	log("Pressed key: " .. n)
+--// ---- MainGameEvent ----
+local GameRemotes = ReplicatedStorage:FindFirstChild("GameRemotes")
+local MainGameEvent = GameRemotes and GameRemotes:FindFirstChild("MainGameEvent")
+if not MainGameEvent then
+	MainGameEvent = ReplicatedStorage:FindFirstChild("MainGameEvent")
+end
+
+--// ---- Find DB SG tool ----
+local function findTargetTool()
+	local char = LP.Character
+	local backpack = LP:FindFirstChildOfClass("Backpack")
+	if char then
+		for _, t in ipairs(char:GetChildren()) do
+			if t:IsA("Tool") and t.Name == TARGET_TOOL_NAME then return t, "equipped" end
+		end
+	end
+	if backpack then
+		for _, t in ipairs(backpack:GetChildren()) do
+			if t:IsA("Tool") and t.Name == TARGET_TOOL_NAME then return t, "backpack" end
+		end
+	end
+	local function matches(name)
+		local n = name:lower()
+		return n:find("double%-barrel", 1) ~= nil or n:find("double barrel", 1) ~= nil
+	end
+	if char then
+		for _, t in ipairs(char:GetChildren()) do
+			if t:IsA("Tool") and matches(t.Name) then return t, "equipped (fuzzy)" end
+		end
+	end
+	if backpack then
+		for _, t in ipairs(backpack:GetChildren()) do
+			if t:IsA("Tool") and matches(t.Name) then return t, "backpack (fuzzy)" end
+		end
+	end
+	return nil, nil
+end
+
+local SLOT_ATTRS = {"ToolSlot","Slot","EquipSlot","Index","HotbarSlot","SlotIndex","ToolIndex","HotbarIndex"}
+local function getToolSlotNumber(tool)
+	if not tool then return nil end
+	for _, name in ipairs(SLOT_ATTRS) do
+		local v = tool:GetAttribute(name)
+		if typeof(v) == "number" then return v end
+	end
+	return nil
+end
+
+local function equipTargetTool()
+	local char = LP.Character
+	if not char then return nil end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if not hum then return nil end
+	local tool, where = findTargetTool()
+	if not tool then
+		log("❌ Could not find tool:", TARGET_TOOL_NAME)
+		return nil
+	end
+	if tool.Parent == char then
+		log("✔ Already equipped:", tool.Name)
+		return tool
+	end
+	hum:EquipTool(tool)
+	local t = 0
+	while tool.Parent ~= char and t < 0.4 do
+		task.wait(0.02)
+		t = t + 0.02
+	end
+	if tool.Parent == char then
+		local slotNum = getToolSlotNumber(tool)
+		log("✔ Equipped:", tool.Name, "| via:", where, "| slot:", slotNum and tostring(slotNum) or "?")
+		return tool
+	else
+		log("⚠ EquipTool failed")
+		return nil
+	end
+end
+
+--// ---- "Am I this instance?" ----
+local function isMine(inst)
+	if typeof(inst) ~= "Instance" then return false end
+	local c = LP.Character
+	if c and (inst == c or inst:IsDescendantOf(c)) then return true end
+	local wp = Workspace:FindFirstChild("Players")
+	if wp then
+		local alt = wp:FindFirstChild(LP.Name)
+		if alt and (inst == alt or inst:IsDescendantOf(alt)) then return true end
+	end
+	return false
 end
 
 --// ---- Teleport ----
@@ -182,6 +242,64 @@ local function getEquippedTool()
 	return char:FindFirstChildOfClass("Tool")
 end
 
+--// ---- Damage trace (declared AFTER camera funcs so no ordering issue) ----
+local function handleBulletPayload(...)
+	local args = {...}
+	if args[1] ~= "ClientBullet" then return end
+	local shooter = args[2]
+	if typeof(shooter) ~= "Instance" then return end
+
+	local hitMe = false
+	for i = 3, #args do
+		local a = args[i]
+		if typeof(a) == "Instance" and isMine(a) then hitMe = true break end
+	end
+	if not hitMe then return end
+
+	local shooterPlayer = Players:GetPlayerFromCharacter(shooter)
+	if not shooterPlayer and shooter:IsA("Player") then shooterPlayer = shooter end
+	if not shooterPlayer or shooterPlayer == LP then return end
+
+	lastAttacker = shooterPlayer
+	lastAttackerTime = tick()
+	lastBulletSeq = lastBulletSeq + 1
+	log("Bullet hit me from:", shooterPlayer.Name, "(seq " .. lastBulletSeq .. ")")
+
+	-- Instant teleport
+	if ENABLED and not isCountering then
+		task.spawn(function()
+			local shooterChar = shooterPlayer.Character
+			local shooterRoot = shooterChar and shooterChar:FindFirstChild("HumanoidRootPart")
+			if not shooterRoot then return end
+			local char = LP.Character
+			local myRoot = char and char:FindFirstChild("HumanoidRootPart")
+			if not myRoot then return end
+
+			local look = shooterRoot.CFrame.LookVector
+			local goal = shooterRoot.Position - look * BEHIND_DIST + Vector3.new(0, TELEPORT_Y, 0)
+			local targetCF = CFrame.new(goal, shooterRoot.Position)
+
+			myRoot.CFrame = targetCF
+			myRoot.AssemblyLinearVelocity = Vector3.zero
+			myRoot.AssemblyAngularVelocity = Vector3.zero
+			char:PivotTo(targetCF)
+			lastTeleportTime = tick()
+			log("⚡ Instant teleport to", shooterPlayer.Name)
+
+			if not camLockTarget then
+				startCameraLock(shooterPlayer)
+			end
+		end)
+	end
+end
+
+if MainGameEvent then
+	MainGameEvent.OnClientEvent:Connect(handleBulletPayload)
+	log("Hooked MainGameEvent.OnClientEvent")
+else
+	log("⚠ MainGameEvent not found")
+end
+
 --// ---- Attacker resolution ----
 local function resolveAttacker()
 	if lastAttacker and (tick() - lastAttackerTime) <= ATTACKER_MEMORY then
@@ -191,7 +309,6 @@ local function resolveAttacker()
 			return lastAttacker
 		end
 	end
-
 	local seqBefore = lastBulletSeq
 	local deadline = tick() + BULLET_WAIT
 	while tick() < deadline do
@@ -206,7 +323,6 @@ local function resolveAttacker()
 		end
 		task.wait(0.01)
 	end
-
 	local char = LP.Character
 	local hum = char and char:FindFirstChildOfClass("Humanoid")
 	if hum then
@@ -218,7 +334,6 @@ local function resolveAttacker()
 			if p then return p end
 		end
 	end
-
 	local myRoot = char and char:FindFirstChild("HumanoidRootPart")
 	if not myRoot then return nil end
 	local closest, best = nil, math.huge
@@ -235,7 +350,7 @@ local function resolveAttacker()
 	return closest
 end
 
---// ---- Counter attack (slot 1 spam) ----
+--// ---- Counter attack ----
 local function counterAttack(attacker)
 	if isCountering then return end
 	if not attacker or not attacker.Character then return end
@@ -261,31 +376,39 @@ local function counterAttack(attacker)
 
 		log("Attacking:", attacker.Name)
 
-		-- Equip slot 1
-		pressNumberKey(1)
-		task.wait(0.15)
+		local tool = equipTargetTool()
+		if not tool then
+			isCountering = false
+			stopCameraLock()
+			return
+		end
 
-		-- Spam slot 1 until target <= 5% HP (or dead / timeout)
 		local side = 1
 		local start = tick()
 		while tick() - start < MAX_ATTACK_TIME do
 			if not ENABLED then break end
-
 			tChar = attacker.Character
 			tHum = tChar and tChar:FindFirstChildOfClass("Humanoid")
 			tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
 			if not (tHum and tRoot) then break end
 			if tHum.Health <= 0 then break end
-
 			local pct = tHum.Health / tHum.MaxHealth
 			if pct <= HP_STOP_PERCENT then break end
 
 			teleportAround(tRoot, side)
 			side = -side
 
-			local tool = getEquippedTool()
-			if tool then tool:Activate() end
+			if tool.Parent ~= LP.Character then
+				if tool.Parent == nil then
+					tool = equipTargetTool()
+					if not tool then break end
+				else
+					myHum:EquipTool(tool)
+					task.wait(0.02)
+				end
+			end
 
+			tool:Activate()
 			task.wait(ATTACK_RATE)
 		end
 
@@ -330,4 +453,4 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	end
 end)
 
-log("Loaded — slot 1 spam + camera lock. F6 to toggle.")
+log("Loaded — auto-equips " .. TARGET_TOOL_NAME .. ". F6 to toggle.")
