@@ -1,12 +1,377 @@
---// Services
+--// ============================================================
+--// LOADING SCREEN (modern, animated, purple/black/grey)
+--// ============================================================
 local Players            = game:GetService("Players")
 local ReplicatedStorage  = game:GetService("ReplicatedStorage")
 local VirtualInputManager= game:GetService("VirtualInputManager")
 local UserInputService   = game:GetService("UserInputService")
 local RunService         = game:GetService("RunService")
+local TweenService       = game:GetService("TweenService")
+local Lighting           = game:GetService("Lighting")
 
---// Local Player
+--// Safe LocalPlayer wait (works in executors and normal clients)
 local LP = Players.LocalPlayer
+if not LP then
+	repeat task.wait(0.1) until Players.LocalPlayer
+	LP = Players.LocalPlayer
+end
+
+--// Safe PlayerGui wait
+local PlayerGui = LP:WaitForChild("PlayerGui", 10)
+if not PlayerGui then
+	warn("[Counter] PlayerGui never loaded — aborting loading screen.")
+	return
+end
+
+--// Build GUI
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "CounterLoadScreen"
+screenGui.IgnoreGuiInset = true
+screenGui.ResetOnSpawn = false
+screenGui.DisplayOrder = 999
+screenGui.Parent = PlayerGui
+
+local root = Instance.new("Frame")
+root.Name = "Root"
+root.Size = UDim2.fromScale(1, 1)
+root.BackgroundColor3 = Color3.fromRGB(8, 8, 10)
+root.BorderSizePixel = 0
+root.Parent = screenGui
+
+--// Animated squares background
+local squaresFrame = Instance.new("Frame")
+squaresFrame.Size = UDim2.fromScale(1, 1)
+squaresFrame.BackgroundTransparency = 1
+squaresFrame.Parent = root
+
+local squareColors = {
+	Color3.fromRGB(120, 60, 220),   -- purple
+	Color3.fromRGB(80, 30, 160),    -- deep purple
+	Color3.fromRGB(50, 50, 60),     -- grey
+	Color3.fromRGB(150, 150, 160),  -- light grey
+	Color3.fromRGB(180, 100, 255),  -- bright purple
+}
+
+local squares = {}
+for i = 1, 28 do
+	local s = Instance.new("Frame")
+	s.Size = UDim2.fromOffset(math.random(18, 60), math.random(18, 60))
+	s.Position = UDim2.fromScale(math.random(), math.random())
+	s.BackgroundColor3 = squareColors[math.random(1, #squareColors)]
+	s.BackgroundTransparency = math.random(55, 90) / 100
+	s.BorderSizePixel = 0
+	s.Rotation = math.random(0, 360)
+	s.Parent = squaresFrame
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, math.random(2, 8))
+	corner.Parent = s
+
+	squares[#squares + 1] = {
+		obj = s,
+		speed = math.random(20, 70) / 100,
+		rotSpeed = math.random(-40, 40) / 100,
+		drift = (math.random() - 0.5) * 0.02,
+	}
+end
+
+--// Subtle vignette / contrast overlay
+local vignette = Instance.new("Frame")
+vignette.Size = UDim2.fromScale(1, 1)
+vignette.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+vignette.BackgroundTransparency = 0.55
+vignette.BorderSizePixel = 0
+vignette.ZIndex = 2
+vignette.Parent = root
+
+local vignetteGrad = Instance.new("UIGradient")
+vignetteGrad.Transparency = NumberSequence.new({
+	NumberSequenceKeypoint.new(0, 0.2),
+	NumberSequenceKeypoint.new(0.5, 0.85),
+	NumberSequenceKeypoint.new(1, 0.2),
+})
+vignetteGrad.Rotation = 90
+vignetteGrad.Parent = vignette
+
+--// Center panel
+local panel = Instance.new("Frame")
+panel.AnchorPoint = Vector2.new(0.5, 0.5)
+panel.Position = UDim2.fromScale(0.5, 0.5)
+panel.Size = UDim2.fromOffset(560, 280)
+panel.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
+panel.BackgroundTransparency = 0.15
+panel.BorderSizePixel = 0
+panel.ZIndex = 5
+panel.Parent = root
+
+local panelCorner = Instance.new("UICorner")
+panelCorner.CornerRadius = UDim.new(0, 14)
+panelCorner.Parent = panel
+
+local panelStroke = Instance.new("UIStroke")
+panelStroke.Color = Color3.fromRGB(140, 80, 255)
+panelStroke.Thickness = 1.5
+panelStroke.Transparency = 0.25
+panelStroke.Parent = panel
+
+local panelGrad = Instance.new("UIGradient")
+panelGrad.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, Color3.fromRGB(30, 20, 45)),
+	ColorSequenceKeypoint.new(0.5, Color3.fromRGB(12, 12, 16)),
+	ColorSequenceKeypoint.new(1, Color3.fromRGB(20, 20, 28)),
+})
+panelGrad.Rotation = 45
+panelGrad.Parent = panel
+
+--// Title
+local title = Instance.new("TextLabel")
+title.AnchorPoint = Vector2.new(0.5, 0)
+title.Position = UDim2.fromScale(0.5, 0.08)
+title.Size = UDim2.fromScale(0.9, 0.2)
+title.BackgroundTransparency = 1
+title.Text = "COUNTER"
+title.Font = Enum.Font.GothamBlack
+title.TextSize = 42
+title.TextColor3 = Color3.fromRGB(235, 225, 255)
+title.TextStrokeTransparency = 0.6
+title.TextStrokeColor3 = Color3.fromRGB(120, 60, 220)
+title.ZIndex = 6
+title.Parent = panel
+
+local titleGrad = Instance.new("UIGradient")
+titleGrad.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, Color3.fromRGB(200, 160, 255)),
+	ColorSequenceKeypoint.new(0.5, Color3.fromRGB(255, 255, 255)),
+	ColorSequenceKeypoint.new(1, Color3.fromRGB(160, 100, 255)),
+})
+titleGrad.Rotation = 90
+titleGrad.Parent = title
+
+--// Subtitle (loading status)
+local subtitle = Instance.new("TextLabel")
+subtitle.AnchorPoint = Vector2.new(0.5, 0)
+subtitle.Position = UDim2.fromScale(0.5, 0.3)
+subtitle.Size = UDim2.fromScale(0.9, 0.07)
+subtitle.BackgroundTransparency = 1
+subtitle.Text = "loading counter systems..."
+subtitle.Font = Enum.Font.Gotham
+subtitle.TextSize = 14
+subtitle.TextColor3 = Color3.fromRGB(180, 180, 195)
+subtitle.TextTransparency = 0.15
+subtitle.ZIndex = 6
+subtitle.Parent = panel
+
+--// Discord link row
+local discordRow = Instance.new("Frame")
+discordRow.AnchorPoint = Vector2.new(0.5, 0)
+discordRow.Position = UDim2.fromScale(0.5, 0.39)
+discordRow.Size = UDim2.fromScale(0.9, 0.09)
+discordRow.BackgroundColor3 = Color3.fromRGB(28, 22, 42)
+discordRow.BackgroundTransparency = 0.25
+discordRow.BorderSizePixel = 0
+discordRow.ZIndex = 6
+discordRow.Parent = panel
+
+local discordRowCorner = Instance.new("UICorner")
+discordRowCorner.CornerRadius = UDim.new(1, 0)
+discordRowCorner.Parent = discordRow
+
+local discordRowStroke = Instance.new("UIStroke")
+discordRowStroke.Color = Color3.fromRGB(140, 80, 255)
+discordRowStroke.Thickness = 1
+discordRowStroke.Transparency = 0.5
+discordRowStroke.Parent = discordRow
+
+local discordIcon = Instance.new("TextLabel")
+discordIcon.AnchorPoint = Vector2.new(0, 0.5)
+discordIcon.Position = UDim2.fromScale(0.035, 0.5)
+discordIcon.Size = UDim2.fromOffset(22, 22)
+discordIcon.BackgroundTransparency = 1
+discordIcon.Text = "🔗"
+discordIcon.Font = Enum.Font.GothamBold
+discordIcon.TextSize = 18
+discordIcon.TextColor3 = Color3.fromRGB(200, 160, 255)
+discordIcon.ZIndex = 7
+discordIcon.Parent = discordRow
+
+local discordLink = Instance.new("TextLabel")
+discordLink.AnchorPoint = Vector2.new(0, 0.5)
+discordLink.Position = UDim2.fromScale(0.11, 0.5)
+discordLink.Size = UDim2.fromScale(0.6, 1)
+discordLink.BackgroundTransparency = 1
+discordLink.Text = "discord.gg/uqVep54qW9"
+discordLink.Font = Enum.Font.GothamMedium
+discordLink.TextSize = 14
+discordLink.TextColor3 = Color3.fromRGB(215, 200, 255)
+discordLink.TextXAlignment = Enum.TextXAlignment.Left
+discordLink.ZIndex = 7
+discordLink.Parent = discordRow
+
+local copiedLabel = Instance.new("TextLabel")
+copiedLabel.AnchorPoint = Vector2.new(1, 0.5)
+copiedLabel.Position = UDim2.fromScale(0.965, 0.5)
+copiedLabel.Size = UDim2.fromScale(0.28, 1)
+copiedLabel.BackgroundTransparency = 1
+copiedLabel.Text = "copied!"
+copiedLabel.Font = Enum.Font.GothamBold
+copiedLabel.TextSize = 13
+copiedLabel.TextColor3 = Color3.fromRGB(160, 255, 180)
+copiedLabel.TextTransparency = 1
+copiedLabel.TextXAlignment = Enum.TextXAlignment.Right
+copiedLabel.ZIndex = 7
+copiedLabel.Parent = discordRow
+
+--// Progress bar
+local barBg = Instance.new("Frame")
+barBg.AnchorPoint = Vector2.new(0.5, 0)
+barBg.Position = UDim2.fromScale(0.5, 0.56)
+barBg.Size = UDim2.fromScale(0.82, 0.04)
+barBg.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
+barBg.BorderSizePixel = 0
+barBg.ZIndex = 6
+barBg.Parent = panel
+
+local barBgCorner = Instance.new("UICorner")
+barBgCorner.CornerRadius = UDim.new(1, 0)
+barBgCorner.Parent = barBg
+
+local barFill = Instance.new("Frame")
+barFill.Size = UDim2.fromScale(0, 1)
+barFill.BackgroundColor3 = Color3.fromRGB(150, 90, 255)
+barFill.BorderSizePixel = 0
+barFill.ZIndex = 7
+barFill.Parent = barBg
+
+local barFillCorner = Instance.new("UICorner")
+barFillCorner.CornerRadius = UDim.new(1, 0)
+barFillCorner.Parent = barFill
+
+local barFillGrad = Instance.new("UIGradient")
+barFillGrad.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, Color3.fromRGB(120, 60, 220)),
+	ColorSequenceKeypoint.new(1, Color3.fromRGB(200, 150, 255)),
+})
+barFillGrad.Parent = barFill
+
+--// Credits
+local credits = Instance.new("TextLabel")
+credits.AnchorPoint = Vector2.new(0.5, 0)
+credits.Position = UDim2.fromScale(0.5, 0.68)
+credits.Size = UDim2.fromScale(0.9, 0.26)
+credits.BackgroundTransparency = 1
+credits.Text = "owner / lead developer / modeler  •  @kp3g\nco-owner / advertiser  •  @sch1uma"
+credits.Font = Enum.Font.GothamMedium
+credits.TextSize = 13
+credits.TextColor3 = Color3.fromRGB(170, 165, 185)
+credits.TextTransparency = 0.2
+credits.TextYAlignment = Enum.TextYAlignment.Top
+credits.ZIndex = 6
+credits.Parent = panel
+
+--// ---- Auto copy Discord link to clipboard ----
+local DISCORD_LINK = "https://discord.gg/uqVep54qW9"
+
+local function copyDiscordLink()
+	local ok = pcall(function()
+		if setclipboard then
+			setclipboard(DISCORD_LINK)
+		elseif toclipboard then
+			toclipboard(DISCORD_LINK)
+		else
+			error("no clipboard function available")
+		end
+	end)
+	if ok then
+		copiedLabel.Text = "copied!"
+		copiedLabel.TextColor3 = Color3.fromRGB(160, 255, 180)
+		copiedLabel.TextTransparency = 0
+		TweenService:Create(copiedLabel, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {TextTransparency = 1}):Play()
+	else
+		copiedLabel.Text = "copy failed"
+		copiedLabel.TextColor3 = Color3.fromRGB(255, 120, 120)
+		copiedLabel.TextTransparency = 0
+		TweenService:Create(copiedLabel, TweenInfo.new(1.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {TextTransparency = 1}):Play()
+	end
+end
+
+task.spawn(function()
+	task.wait(0.35)
+	copyDiscordLink()
+end)
+
+--// Loading screen control
+local loadDone = false
+local progress = 0
+
+-- animate squares
+local squaresConn
+squaresConn = RunService.RenderStepped:Connect(function(dt)
+	for _, s in ipairs(squares) do
+		local o = s.obj
+		local pos = o.Position
+		local newY = pos.Y.Scale + s.speed * dt * 0.08
+		if newY > 1.1 then newY = -0.1 end
+		o.Position = UDim2.fromScale(pos.X.Scale + s.drift * dt, newY)
+		o.Rotation = o.Rotation + s.rotSpeed * dt * 20
+	end
+end)
+
+-- animate progress + subtitle dots
+local dotTime = 0
+local progressConn
+progressConn = RunService.RenderStepped:Connect(function(dt)
+	if loadDone then return end
+	dotTime = dotTime + dt
+
+	local dots = string.rep(".", math.floor(dotTime * 3) % 4)
+	subtitle.Text = "loading counter systems" .. dots
+
+	local target = math.min(1, progress + dt * 0.42)
+	progress = target
+	barFill.Size = UDim2.fromScale(progress, 1)
+
+	panelStroke.Transparency = 0.25 + math.sin(dotTime * 3) * 0.15
+end)
+
+-- finish loading
+task.spawn(function()
+	task.wait(2.6)
+	loadDone = true
+	progressConn:Disconnect()
+
+	TweenService:Create(barFill, TweenInfo.new(0.25), {Size = UDim2.fromScale(1, 1)}):Play()
+	task.wait(0.3)
+
+	local fadeTime = 0.6
+	local fadeInfo = TweenInfo.new(fadeTime, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+	for _, s in ipairs(squares) do
+		TweenService:Create(s.obj, fadeInfo, {BackgroundTransparency = 1}):Play()
+	end
+	TweenService:Create(vignette, fadeInfo, {BackgroundTransparency = 1}):Play()
+	TweenService:Create(panel, fadeInfo, {BackgroundTransparency = 1}):Play()
+	TweenService:Create(panelStroke, fadeInfo, {Transparency = 1}):Play()
+	TweenService:Create(title, fadeInfo, {TextTransparency = 1, TextStrokeTransparency = 1}):Play()
+	TweenService:Create(subtitle, fadeInfo, {TextTransparency = 1}):Play()
+	TweenService:Create(credits, fadeInfo, {TextTransparency = 1}):Play()
+	TweenService:Create(barBg, fadeInfo, {BackgroundTransparency = 1}):Play()
+	TweenService:Create(barFill, fadeInfo, {BackgroundTransparency = 1}):Play()
+	TweenService:Create(discordRow, fadeInfo, {BackgroundTransparency = 1}):Play()
+	TweenService:Create(discordRowStroke, fadeInfo, {Transparency = 1}):Play()
+	TweenService:Create(discordIcon, fadeInfo, {TextTransparency = 1}):Play()
+	TweenService:Create(discordLink, fadeInfo, {TextTransparency = 1}):Play()
+	TweenService:Create(copiedLabel, fadeInfo, {TextTransparency = 1}):Play()
+
+	task.wait(fadeTime + 0.1)
+	squaresConn:Disconnect()
+	screenGui:Destroy()
+end)
+
+--// ============================================================
+--// MAIN COUNTER SCRIPT
+--// ============================================================
+
+--// Local Player (already have LP from above)
 local Character = LP.Character or LP.CharacterAdded:Wait()
 local Humanoid  = Character:WaitForChild("Humanoid")
 local Camera    = workspace.CurrentCamera
@@ -42,7 +407,7 @@ local camLockTarget = nil
 local camLockConn = nil
 local mouseLockConn = nil
 
---// Forward declarations (so later functions can reference these safely)
+--// Forward declarations
 local startCameraLock
 local stopCameraLock
 local startMouseLock
@@ -242,7 +607,7 @@ local function getEquippedTool()
 	return char:FindFirstChildOfClass("Tool")
 end
 
---// ---- Damage trace (declared AFTER camera funcs so no ordering issue) ----
+--// ---- Damage trace ----
 local function handleBulletPayload(...)
 	local args = {...}
 	if args[1] ~= "ClientBullet" then return end
@@ -265,7 +630,6 @@ local function handleBulletPayload(...)
 	lastBulletSeq = lastBulletSeq + 1
 	log("Bullet hit me from:", shooterPlayer.Name, "(seq " .. lastBulletSeq .. ")")
 
-	-- Instant teleport
 	if ENABLED and not isCountering then
 		task.spawn(function()
 			local shooterChar = shooterPlayer.Character
